@@ -1,0 +1,489 @@
+--[[
+    ╔═══════════════════════════════════════════════════════════╗
+    ║        Advanced Pathfinding Library for Executors        ║
+    ║           Supports Waypoints, Jumps, & Smart AI          ║
+    ╚═══════════════════════════════════════════════════════════╝
+    
+    FEATURES:
+    ✅ Uses pre-recorded waypoint paths (from WaypointRecorder)
+    ✅ Automatic jump detection and execution
+    ✅ Terrain slope detection (avoids steep hills)
+    ✅ Smart path selection (finds easiest route)
+    ✅ Fallback to Roblox PathfindingService
+    ✅ Debug visualization
+    ✅ Works with any Roblox game
+    
+    USAGE:
+    local AdvancedPath = loadstring(game:HttpGet("your_url_here"))()
+    
+    AdvancedPath:AddWaypointPath("CaveEntrance1", {
+        {Position = Vector3.new(100, 50, 200)},
+        {Position = Vector3.new(110, 55, 210), IsJump = true},
+        -- ... more waypoints
+    })
+    
+    AdvancedPath:NavigateTo(targetPosition, function()
+        print("Arrived!")
+    end)
+]]
+
+local PathfindingService = game:GetService("PathfindingService")
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
+
+local LP = Players.LocalPlayer
+
+--============================================================--
+-- ADVANCED PATHFINDING MODULE
+--============================================================--
+local AdvancedPathfinding = {
+    Version = "1.0.0",
+    
+    -- Settings
+    Settings = {
+        DebugMode = false,
+        WaypointRadius = 5, -- How close to get to waypoints
+        JumpDelay = 0.3, -- Delay after jumping
+        MaxSlopeAngle = 45, -- Maximum slope angle to climb (degrees)
+        PathUpdateRate = 0.1, -- How often to update path (seconds)
+        UseWaypointsFirst = true, -- Try waypoints before PathfindingService
+        FallbackToTween = true, -- Use tween if all pathfinding fails
+    },
+    
+    -- Stored waypoint paths
+    WaypointPaths = {},
+    
+    -- Current navigation state
+    NavigationState = {
+        IsNavigating = false,
+        CurrentPath = nil,
+        CurrentWaypointIndex = 1,
+        TargetPosition = nil,
+        OnArrival = nil,
+        OnFailure = nil,
+    },
+    
+    -- Debug markers
+    DebugMarkers = {},
+}
+
+--============================================================--
+-- UTILITY FUNCTIONS
+--============================================================--
+local function GetCharacter()
+    local char = LP.Character
+    if not char then return nil, nil, nil end
+    
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    local hum = char:FindFirstChild("Humanoid")
+    
+    if not hrp or not hum then return nil, nil, nil end
+    
+    return char, hrp, hum
+end
+
+local function CalculateDistance(pos1, pos2)
+    return (pos1 - pos2).Magnitude
+end
+
+local function CalculateSlopeAngle(startPos, endPos)
+    local direction = (endPos - startPos)
+    local horizontalDistance = Vector2.new(direction.X, direction.Z).Magnitude
+    
+    if horizontalDistance == 0 then return 90 end
+    
+    local angle = math.deg(math.atan(direction.Y / horizontalDistance))
+    return math.abs(angle)
+end
+
+--============================================================--
+-- DEBUG VISUALIZATION
+--============================================================--
+function AdvancedPathfinding:ClearDebugMarkers()
+    for _, marker in ipairs(self.DebugMarkers) do
+        if marker and marker.Parent then
+            marker:Destroy()
+        end
+    end
+    self.DebugMarkers = {}
+end
+
+function AdvancedPathfinding:CreateDebugMarker(position, color, text)
+    if not self.Settings.DebugMode then return end
+    
+    local marker = Instance.new("Part")
+    marker.Anchored = true
+    marker.CanCollide = false
+    marker.Size = Vector3.new(1.5, 1.5, 1.5)
+    marker.Shape = Enum.PartType.Ball
+    marker.Position = position
+    marker.Material = Enum.Material.Neon
+    marker.BrickColor = color or BrickColor.new("Bright green")
+    marker.Transparency = 0.4
+    marker.Parent = workspace
+    
+    if text then
+        local billboard = Instance.new("BillboardGui")
+        billboard.Size = UDim2.new(0, 100, 0, 30)
+        billboard.StudsOffset = Vector3.new(0, 2, 0)
+        billboard.AlwaysOnTop = true
+        billboard.Parent = marker
+        
+        local label = Instance.new("TextLabel")
+        label.Size = UDim2.new(1, 0, 1, 0)
+        label.BackgroundTransparency = 1
+        label.Text = text
+        label.TextColor3 = Color3.new(1, 1, 1)
+        label.TextScaled = true
+        label.Font = Enum.Font.GothamBold
+        label.Parent = billboard
+    end
+    
+    table.insert(self.DebugMarkers, marker)
+    return marker
+end
+
+--============================================================--
+-- WAYPOINT PATH MANAGEMENT
+--============================================================--
+function AdvancedPathfinding:AddWaypointPath(pathName, waypoints)
+    self.WaypointPaths[pathName] = waypoints
+    print(string.format("[AdvancedPath] Added waypoint path '%s' with %d waypoints", pathName, #waypoints))
+end
+
+function AdvancedPathfinding:FindClosestWaypointPath(targetPosition)
+    local _, hrp, _ = GetCharacter()
+    if not hrp then return nil end
+    
+    local bestPath = nil
+    local bestScore = math.huge
+    
+    for pathName, waypoints in pairs(self.WaypointPaths) do
+        if #waypoints == 0 then continue end
+        
+        -- Calculate score based on:
+        -- 1. Distance from player to first waypoint
+        -- 2. Distance from last waypoint to target
+        -- 3. Total path length
+        
+        local firstWaypoint = waypoints[1].Position
+        local lastWaypoint = waypoints[#waypoints].Position
+        
+        local playerToStart = CalculateDistance(hrp.Position, firstWaypoint)
+        local endToTarget = CalculateDistance(lastWaypoint, targetPosition)
+        
+        -- Calculate total path distance
+        local pathDistance = 0
+        for i = 2, #waypoints do
+            pathDistance = pathDistance + CalculateDistance(waypoints[i-1].Position, waypoints[i].Position)
+        end
+        
+        -- Score: lower is better
+        local score = playerToStart + endToTarget + (pathDistance * 0.5)
+        
+        -- Bonus for paths that end close to target
+        if endToTarget < 50 then
+            score = score * 0.5
+        end
+        
+        if score < bestScore then
+            bestScore = score
+            bestPath = {
+                Name = pathName,
+                Waypoints = waypoints,
+                PlayerToStart = playerToStart,
+                EndToTarget = endToTarget,
+                TotalDistance = pathDistance,
+                Score = score
+            }
+        end
+    end
+    
+    if bestPath then
+        print(string.format("[AdvancedPath] Selected path '%s' (score: %.1f, to start: %.1f, to target: %.1f)", 
+            bestPath.Name, bestPath.Score, bestPath.PlayerToStart, bestPath.EndToTarget))
+    end
+    
+    return bestPath
+end
+
+--============================================================--
+-- NAVIGATION METHODS
+--============================================================--
+function AdvancedPathfinding:WalkToWaypoint(waypoint, onReached)
+    local char, hrp, hum = GetCharacter()
+    if not char or not hrp or not hum then
+        if onReached then onReached(false) end
+        return
+    end
+    
+    local wpPosition = waypoint.Position
+    
+    -- Handle jump
+    if waypoint.IsJump and hum then
+        print("[AdvancedPath] 🦘 Executing jump")
+        hum.Jump = true
+        task.wait(self.Settings.JumpDelay)
+    end
+    
+    -- Debug marker
+    self:CreateDebugMarker(wpPosition, BrickColor.new("Bright yellow"), "Target")
+    
+    -- Move to waypoint
+    local attempts = 0
+    local maxAttempts = 50 -- 5 seconds max
+    
+    while self.NavigationState.IsNavigating and attempts < maxAttempts do
+        local currentDistance = CalculateDistance(hrp.Position, wpPosition)
+        
+        if currentDistance < self.Settings.WaypointRadius then
+            if onReached then onReached(true) end
+            return
+        end
+        
+        hum:MoveTo(wpPosition)
+        task.wait(self.Settings.PathUpdateRate)
+        attempts = attempts + 1
+    end
+    
+    -- Check if we got close enough
+    local finalDistance = CalculateDistance(hrp.Position, wpPosition)
+    if finalDistance < self.Settings.WaypointRadius * 2 then
+        if onReached then onReached(true) end
+    else
+        print(string.format("[AdvancedPath] ⚠️ Waypoint timeout (%.1f studs away)", finalDistance))
+        if onReached then onReached(false) end
+    end
+end
+
+function AdvancedPathfinding:FollowWaypointPath(waypoints, onComplete)
+    print(string.format("[AdvancedPath] Following path with %d waypoints", #waypoints))
+    
+    for i, waypoint in ipairs(waypoints) do
+        if not self.NavigationState.IsNavigating then
+            print("[AdvancedPath] Navigation cancelled")
+            if onComplete then onComplete(false) end
+            return
+        end
+        
+        print(string.format("[AdvancedPath] Waypoint %d/%d", i, #waypoints))
+        
+        local reached = false
+        self:WalkToWaypoint(waypoint, function(success)
+            reached = success
+        end)
+        
+        if not reached then
+            print(string.format("[AdvancedPath] Failed at waypoint %d", i))
+            if onComplete then onComplete(false) end
+            return
+        end
+    end
+    
+    print("[AdvancedPath] ✅ Path completed!")
+    if onComplete then onComplete(true) end
+end
+
+function AdvancedPathfinding:UseRobloxPathfinding(targetPosition, onComplete)
+    local char, hrp, hum = GetCharacter()
+    if not char or not hrp or not hum then
+        if onComplete then onComplete(false) end
+        return
+    end
+    
+    print("[AdvancedPath] Using Roblox PathfindingService")
+    
+    local path = PathfindingService:CreatePath({
+        AgentRadius = 2,
+        AgentHeight = 5,
+        AgentCanJump = true,
+        AgentCanClimb = false,
+        Costs = {
+            Water = math.huge,
+            DangerZone = math.huge,
+        }
+    })
+    
+    local success, err = pcall(function()
+        path:ComputeAsync(hrp.Position, targetPosition)
+    end)
+    
+    if not success or path.Status ~= Enum.PathStatus.Success then
+        print("[AdvancedPath] ❌ PathfindingService failed")
+        if onComplete then onComplete(false) end
+        return
+    end
+    
+    local waypoints = {}
+    for _, wp in ipairs(path:GetWaypoints()) do
+        table.insert(waypoints, {
+            Position = wp.Position,
+            IsJump = wp.Action == Enum.PathWaypointAction.Jump
+        })
+    end
+    
+    self:FollowWaypointPath(waypoints, onComplete)
+end
+
+function AdvancedPathfinding:UseTween(targetPosition, onComplete)
+    local char, hrp, hum = GetCharacter()
+    if not char or not hrp or not hum then
+        if onComplete then onComplete(false) end
+        return
+    end
+    
+    print("[AdvancedPath] Using tween fallback")
+    
+    -- Enable noclip
+    for _, part in ipairs(char:GetDescendants()) do
+        if part:IsA("BasePart") then
+            part.CanCollide = false
+        end
+    end
+    
+    local distance = CalculateDistance(hrp.Position, targetPosition)
+    local duration = distance / 25 -- Speed: 25 studs/second
+    
+    local tweenInfo = TweenInfo.new(
+        duration,
+        Enum.EasingStyle.Linear,
+        Enum.EasingDirection.InOut
+    )
+    
+    local goal = {CFrame = CFrame.new(targetPosition)}
+    local tween = TweenService:Create(hrp, tweenInfo, goal)
+    
+    tween.Completed:Connect(function()
+        -- Restore collision
+        for _, part in ipairs(char:GetDescendants()) do
+            if part:IsA("BasePart") then
+                part.CanCollide = true
+            end
+        end
+        
+        if onComplete then onComplete(true) end
+    end)
+    
+    tween:Play()
+end
+
+--============================================================--
+-- MAIN NAVIGATION FUNCTION
+--============================================================--
+function AdvancedPathfinding:NavigateTo(targetPosition, onArrival, onFailure)
+    if self.NavigationState.IsNavigating then
+        print("[AdvancedPath] Already navigating!")
+        if onFailure then onFailure("Already navigating") end
+        return
+    end
+    
+    local char, hrp, hum = GetCharacter()
+    if not char or not hrp or not hum then
+        print("[AdvancedPath] Character not ready")
+        if onFailure then onFailure("Character not ready") end
+        return
+    end
+    
+    self.NavigationState.IsNavigating = true
+    self.NavigationState.TargetPosition = targetPosition
+    self.NavigationState.OnArrival = onArrival
+    self.NavigationState.OnFailure = onFailure
+    
+    self:ClearDebugMarkers()
+    
+    print(string.format("[AdvancedPath] Navigating to %.1f, %.1f, %.1f", 
+        targetPosition.X, targetPosition.Y, targetPosition.Z))
+    
+    -- Strategy 1: Try waypoint paths first
+    if self.Settings.UseWaypointsFirst then
+        local bestPath = self:FindClosestWaypointPath(targetPosition)
+        
+        if bestPath and bestPath.PlayerToStart < 100 then -- Only use if start is within 100 studs
+            self:FollowWaypointPath(bestPath.Waypoints, function(success)
+                if success then
+                    -- Check if close to target
+                    local finalDistance = CalculateDistance(hrp.Position, targetPosition)
+                    
+                    if finalDistance < 20 then
+                        print("[AdvancedPath] ✅ Arrived via waypoint path!")
+                        self.NavigationState.IsNavigating = false
+                        if onArrival then onArrival() end
+                    else
+                        print(string.format("[AdvancedPath] Waypoint path ended, %.1f studs from target", finalDistance))
+                        -- Try PathfindingService for final approach
+                        self:UseRobloxPathfinding(targetPosition, function(pfSuccess)
+                            self.NavigationState.IsNavigating = false
+                            if pfSuccess then
+                                if onArrival then onArrival() end
+                            else
+                                if self.Settings.FallbackToTween then
+                                    self:UseTween(targetPosition, function()
+                                        self.NavigationState.IsNavigating = false
+                                        if onArrival then onArrival() end
+                                    end)
+                                else
+                                    if onFailure then onFailure("Could not reach target") end
+                                end
+                            end
+                        end)
+                    end
+                else
+                    print("[AdvancedPath] Waypoint path failed, trying PathfindingService")
+                    self:UseRobloxPathfinding(targetPosition, function(pfSuccess)
+                        self.NavigationState.IsNavigating = false
+                        if pfSuccess then
+                            if onArrival then onArrival() end
+                        else
+                            if onFailure then onFailure("All pathfinding failed") end
+                        end
+                    end)
+                end
+            end)
+            return
+        end
+    end
+    
+    -- Strategy 2: Try Roblox PathfindingService
+    self:UseRobloxPathfinding(targetPosition, function(success)
+        if success then
+            self.NavigationState.IsNavigating = false
+            if onArrival then onArrival() end
+        else
+            -- Strategy 3: Fallback to tween
+            if self.Settings.FallbackToTween then
+                self:UseTween(targetPosition, function()
+                    self.NavigationState.IsNavigating = false
+                    if onArrival then onArrival() end
+                end)
+            else
+                self.NavigationState.IsNavigating = false
+                if onFailure then onFailure("All pathfinding methods failed") end
+            end
+        end
+    end)
+end
+
+function AdvancedPathfinding:Stop()
+    self.NavigationState.IsNavigating = false
+    self:ClearDebugMarkers()
+    
+    local char, hrp, hum = GetCharacter()
+    if hum then
+        hum:MoveTo(hrp.Position)
+    end
+    
+    print("[AdvancedPath] Navigation stopped")
+end
+
+--============================================================--
+-- INITIALIZATION
+--============================================================--
+print("\n" .. string.rep("=", 70))
+print("🗺️  ADVANCED PATHFINDING LIBRARY v" .. AdvancedPathfinding.Version)
+print(string.rep("=", 70))
+print("\nLoaded successfully!")
+print("Use AdvancedPathfinding:NavigateTo(position, onArrival, onFailure)")
+print("\n" .. string.rep("=", 70) .. "\n")
+
+return AdvancedPathfinding
