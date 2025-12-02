@@ -3209,9 +3209,21 @@ function Luna:CreateWindow(WindowSettings)
 				end
 
 				function SliderV:Destroy()
-					Slider.Visible = false
-					Slider:Destroy()
-				end
+    -- Animate out with fade
+    TweenService:Create(Slider, TweenInfo.new(0.3, Enum.EasingStyle.Exponential), {BackgroundTransparency = 1}):Play()
+    TweenService:Create(Slider.UIStroke, TweenInfo.new(0.3, Enum.EasingStyle.Exponential), {Transparency = 1}):Play()
+    TweenService:Create(Slider.Title, TweenInfo.new(0.3, Enum.EasingStyle.Exponential), {TextTransparency = 1}):Play()
+    
+    -- Wait for animation to complete
+    task.wait(0.3)
+    
+    -- Actually destroy the slider
+    Slider.Visible = false
+    Slider:Destroy()
+    
+    -- Clear reference
+    SliderV = nil
+end
 
 				if Flag then
 					Luna.Options[Flag] = SliderV
