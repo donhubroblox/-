@@ -1,0 +1,197 @@
+--[[
+    ╔═══════════════════════════════════════════════════════════╗
+    ║         Forge Slider Manager - Luna UI Wrapper           ║
+    ║            Allows dynamic slider updates                 ║
+    ╚═══════════════════════════════════════════════════════════╝
+]]
+
+local ForgeSliderManager = {}
+ForgeSliderManager.__index = ForgeSliderManager
+
+function ForgeSliderManager.new(oreSection)
+    local self = setmetatable({}, ForgeSliderManager)
+    
+    self.OreSection = oreSection
+    self.Sliders = {} -- Store slider references
+    self.Selections = {} -- Store current selections
+    self.LastQuantities = {} -- Track last known max values
+    self.SliderOrder = {} -- Track creation order for proper display
+    
+    return self
+end
+
+-- Create or update a slider
+function ForgeSliderManager:SetOreSlider(oreName, maxQuantity)
+    -- If slider doesn't exist, create it
+    if not self.Sliders[oreName] then
+        local currentSelection = self.Selections[oreName] or 0
+        if currentSelection > maxQuantity then
+            currentSelection = maxQuantity
+        end
+        
+        -- Create the slider
+        self.Sliders[oreName] = self.OreSection:CreateSlider({
+            Name = oreName,
+            Description = string.format("Max: %d | Select quantity to use", maxQuantity),
+            Min = 0,
+            Max = maxQuantity,
+            Default = currentSelection,
+            Color = Color3.fromRGB(0, 125, 255),
+            Increment = 1,
+            Callback = function(value)
+                self.Selections[oreName] = value
+            end
+        })
+        
+        self.LastQuantities[oreName] = maxQuantity
+        self.Selections[oreName] = currentSelection
+        table.insert(self.SliderOrder, oreName)
+        
+        return true, "created"
+    else
+        -- Slider exists - check if max changed significantly
+        local lastMax = self.LastQuantities[oreName]
+        
+        if not lastMax or math.abs(maxQuantity - lastMax) > 0 then
+            -- Max changed - we need to recreate
+            -- Remove old one by marking it for recreation
+            self:RemoveSlider(oreName)
+            
+            -- Recursively call to create new one
+            return self:SetOreSlider(oreName, maxQuantity)
+        end
+        
+        return false, "unchanged"
+    end
+end
+
+-- Remove a slider
+function ForgeSliderManager:RemoveSlider(oreName)
+    self.Sliders[oreName] = nil
+    self.Selections[oreName] = 0
+    self.LastQuantities[oreName] = nil
+    
+    -- Remove from order tracking
+    for i, name in ipairs(self.SliderOrder) do
+        if name == oreName then
+            table.remove(self.SliderOrder, i)
+            break
+        end
+    end
+end
+
+-- Get current selections
+function ForgeSliderManager:GetSelections()
+    return self.Selections
+end
+
+-- Get selection for specific ore
+function ForgeSliderManager:GetSelection(oreName)
+    return self.Selections[oreName] or 0
+end
+
+-- Set selection for specific ore
+function ForgeSliderManager:SetSelection(oreName, value)
+    local maxQty = self.LastQuantities[oreName]
+    if maxQty then
+        value = math.clamp(value, 0, maxQty)
+        self.Selections[oreName] = value
+    end
+end
+
+-- Clear all selections
+function ForgeSliderManager:ClearAllSelections()
+    for oreName, _ in pairs(self.Selections) do
+        self.Selections[oreName] = 0
+    end
+end
+
+-- Get all ore names that have sliders
+function ForgeSliderManager:GetOreNames()
+    return self.SliderOrder
+end
+
+-- Update all sliders based on new ore data
+function ForgeSliderManager:UpdateFromOreData(oreData)
+    local currentOres = {}
+    local changes = {
+        created = {},
+        updated = {},
+        removed = {}
+    }
+    
+    -- Update or create sliders for current ores
+    for oreName, quantity in pairs(oreData) do
+        currentOres[oreName] = true
+        local changed, reason = self:SetOreSlider(oreName, quantity)
+        
+        if changed then
+            if reason == "created" then
+                table.insert(changes.created, oreName)
+            else
+                table.insert(changes.updated, oreName)
+            end
+        end
+    end
+    
+    -- Remove sliders for ores no longer available
+    for oreName, _ in pairs(self.Sliders) do
+        if not currentOres[oreName] then
+            self:RemoveSlider(oreName)
+            table.insert(changes.removed, oreName)
+        end
+    end
+    
+    return changes
+end
+
+-- Get forge-ready ore table (only selected ores with qty > 0)
+function ForgeSliderManager:GetForgeOres()
+    local forgeOres = {}
+    local totalQty = 0
+    local typeCount = 0
+    
+    for oreName, quantity in pairs(self.Selections) do
+        if quantity and quantity > 0 then
+            forgeOres[oreName] = quantity
+            totalQty = totalQty + quantity
+            typeCount = typeCount + 1
+        end
+    end
+    
+    return forgeOres, totalQty, typeCount
+end
+
+-- Validate selections for forging
+function ForgeSliderManager:ValidateForge()
+    local forgeOres, totalQty, typeCount = self:GetForgeOres()
+    
+    if totalQty < 3 then
+        return false, "You must select at least 3 ores total!"
+    end
+    
+    if typeCount > 4 then
+        return false, "Too many ore types! Max 4 different types allowed."
+    end
+    
+    return true, forgeOres
+end
+
+-- Get a formatted list of selected ores
+function ForgeSliderManager:GetSelectionSummary()
+    local summary = {}
+    
+    for oreName, quantity in pairs(self.Selections) do
+        if quantity > 0 then
+            table.insert(summary, string.format("%s x%d", oreName, quantity))
+        end
+    end
+    
+    if #summary == 0 then
+        return "No ores selected"
+    end
+    
+    return table.concat(summary, ", ")
+end
+
+return ForgeSliderManager
