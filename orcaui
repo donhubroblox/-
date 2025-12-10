@@ -264,7 +264,6 @@ function Library:CreateWindow(Config)
     })
     Utility:Round(Main, 6)
     Utility:Stroke(Main, Library.Theme.Outline, 2)
-    Utility:Drag(Main)
 
     -- Sidebar
     local Sidebar = Utility:Create("Frame", {
@@ -276,6 +275,7 @@ function Library:CreateWindow(Config)
         Parent = Sidebar, BackgroundColor3 = Library.Theme.Secondary,
         Size = UDim2.new(0, 10, 1, 0), Position = UDim2.new(1, -10, 0, 0), BorderSizePixel = 0
     })
+    Utility:Drag(Sidebar, Main) -- Drag via Sidebar only to fix slider issue
 
     -- Title Area
     local TitleLabel = Utility:Create("TextLabel", {
@@ -460,6 +460,7 @@ function Library:CreateWindow(Config)
                 return ret
             end
             
+            function Groupbox:CreateLabel(Config) return AddElement(Tab.CreateLabel, Config) end
             function Groupbox:CreateButton(Config) return AddElement(Tab.CreateButton, Config) end
             function Groupbox:CreateToggle(Config) return AddElement(Tab.CreateToggle, Config) end
             function Groupbox:CreateSlider(Config) return AddElement(Tab.CreateSlider, Config) end
@@ -469,6 +470,24 @@ function Library:CreateWindow(Config)
             function Groupbox:CreateKeybind(Config) return AddElement(Tab.CreateKeybind, Config) end
             
             return Groupbox
+        end
+
+        function Tab:CreateLabel(Config)
+            local Text = Config.Text or "Label"
+            local LabelFrame = Utility:Create("Frame", {
+                Parent = Page, BackgroundColor3 = Library.Theme.Main, Size = UDim2.new(1, 0, 0, 26)
+            })
+            Utility:Round(LabelFrame, 4)
+            
+            local Label = Utility:Create("TextLabel", {
+                Parent = LabelFrame, Text = Text, Font = Enum.Font.Gotham, TextSize = 13,
+                TextColor3 = Library.Theme.Text, BackgroundTransparency = 1,
+                Size = UDim2.new(1, -10, 1, 0), Position = UDim2.new(0, 10, 0, 0), TextXAlignment = Enum.TextXAlignment.Left
+            })
+            
+            local Funcs = {}
+            function Funcs:Set(val) Label.Text = val end
+            return Funcs
         end
 
         function Tab:CreateButton(Config)
@@ -964,14 +983,98 @@ function Library:CreateWindow(Config)
         return Tab
     end
     
+    -- // STATUS PANEL \\ --
+    function WindowFunctions:CreateStatusPanel(Config)
+        local Panel = Utility:Create("Frame", {
+            Parent = ScreenGui,
+            BackgroundColor3 = Library.Theme.Main,
+            Size = UDim2.new(0, 200, 0, 100),
+            Position = UDim2.new(0.85, 0, 0.5, 0),
+            Visible = false
+        })
+        Utility:Round(Panel, 6)
+        Utility:Stroke(Panel, Library.Theme.Outline, 2)
+        Utility:Drag(Panel)
+        
+        -- Header
+        local Header = Utility:Create("Frame", {
+            Parent = Panel, BackgroundColor3 = Library.Theme.Secondary,
+            Size = UDim2.new(1, 0, 0, 25)
+        })
+        Utility:Round(Header, 6)
+        Utility:Create("Frame", {Parent = Header, BackgroundColor3 = Library.Theme.Secondary, Size = UDim2.new(1, 0, 0, 5), Position = UDim2.new(0,0,1,-5), BorderSizePixel=0})
+        
+        local Title = Utility:Create("TextLabel", {
+            Parent = Header, Text = Config.Title or "Status", Font = Enum.Font.GothamBold, TextSize = 12,
+            TextColor3 = Library.Theme.Text, BackgroundTransparency = 1,
+            Size = UDim2.new(1, 0, 1, 0), TextXAlignment = Enum.TextXAlignment.Center
+        })
+        
+        local Container = Utility:Create("Frame", {
+            Parent = Panel, BackgroundTransparency = 1,
+            Size = UDim2.new(1, -10, 1, -30), Position = UDim2.new(0, 5, 0, 30)
+        })
+        local List = Utility:Create("UIListLayout", {Parent = Container, SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 5)})
+        
+        List:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+            Panel.Size = UDim2.new(0, 200, 0, List.AbsoluteContentSize.Y + 35)
+        end)
+        
+        local Items = {}
+        local Funcs = {}
+        
+        function Funcs:Add(id, name)
+            local Row = Utility:Create("Frame", {
+                Parent = Container, BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 18)
+            })
+            local N = Utility:Create("TextLabel", {
+                Parent = Row, Text = name, Font = Enum.Font.Gotham, TextSize = 12,
+                TextColor3 = Library.Theme.TextDark, BackgroundTransparency = 1,
+                Size = UDim2.new(0.6, 0, 1, 0), TextXAlignment = Enum.TextXAlignment.Left
+            })
+            local V = Utility:Create("TextLabel", {
+                Parent = Row, Text = "-", Font = Enum.Font.GothamBold, TextSize = 12,
+                TextColor3 = Library.Theme.Accent, BackgroundTransparency = 1,
+                Size = UDim2.new(0.4, 0, 1, 0), Position = UDim2.new(0.6, 0, 0, 0), TextXAlignment = Enum.TextXAlignment.Right
+            })
+            Items[id] = V
+        end
+        
+        function Funcs:Update(id, val)
+            if Items[id] then Items[id].Text = tostring(val) end
+        end
+        
+        function Funcs:Toggle(bool)
+            Panel.Visible = bool
+        end
+        
+        return Funcs
+    end
+
     -- // DASHBOARD \\ --
     function WindowFunctions:ShowDashboard()
         local Dash = WindowFunctions:CreateTab("Dashboard")
         
         local Info = Dash:CreateGroupbox("User Information")
-        Info:CreateButton({Name = "Welcome, " .. Players.LocalPlayer.DisplayName, Callback = function() end})
-        Info:CreateButton({Name = "Account Age: " .. Players.LocalPlayer.AccountAge .. " days", Callback = function() end})
-        Info:CreateButton({Name = "Executor: " .. (identifyexecutor and identifyexecutor() or "Unknown"), Callback = function() end})
+        Info:CreateLabel({Text = "Welcome, " .. Players.LocalPlayer.DisplayName})
+        Info:CreateLabel({Text = "Account Age: " .. Players.LocalPlayer.AccountAge .. " days"})
+        Info:CreateLabel({Text = "Executor: " .. (identifyexecutor and identifyexecutor() or "Unknown")})
+        
+        local Stats = Dash:CreateGroupbox("Server Statistics")
+        local PingLbl = Stats:CreateLabel({Text = "Ping: ..."})
+        local FpsLbl = Stats:CreateLabel({Text = "FPS: ..."})
+        local TimeLbl = Stats:CreateLabel({Text = "Time: ..."})
+        
+        task.spawn(function()
+            while ScreenGui.Parent do
+                local ping = math.floor(game:GetService("Stats").Network.ServerStatsItem["Data Ping"]:GetValue())
+                local fps = math.floor(workspace:GetRealPhysicsFPS())
+                PingLbl:Set("Ping: " .. ping .. " ms")
+                FpsLbl:Set("FPS: " .. fps)
+                TimeLbl:Set("Time: " .. os.date("%X"))
+                task.wait(1)
+            end
+        end)
         
         local Settings = Dash:CreateGroupbox("Configuration")
         local ConfigName = ""
